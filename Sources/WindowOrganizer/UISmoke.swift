@@ -120,6 +120,44 @@ func runUISmoke() -> Int32 {
             let corner = view.previewRect(Frame(x: 1600, y: -200, width: 800, height: 450))
             return abs(display.width / display.height - 1600.0 / 900) < 0.001 && corner.minX == display.minX && corner.minY == display.minY && abs(corner.width - display.width / 2) < 0.001 && abs(corner.height - display.height / 2) < 0.001
         })
+        check("the editor reads windows off the main thread unless a test injects a reader", {
+            let live = LayoutsWindow()
+            let injected = LayoutsWindow()
+            injected.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), Listing()) }
+            return !live.snapshotInjected && live.windowReader != nil && injected.snapshotInjected && !live.isReadingWindows
+        })
+        check("Refresh says Reading windows…, stays usable, shares one read and drops a read across a desktop switch (shots)", {
+            final class Counter: @unchecked Sendable { var reads = 0 }
+            let counter = Counter()
+            let slow = LayoutsWindow(); slow.accessProvider = { true }
+            var desktop = 1
+            slow.contextProvider = { WorkspaceContext(screens: [screen], counts: [screen.uuid: 2], desktops: [screen.uuid: desktop], identities: []) }
+            slow.screens = [screen]; slow.spaces = [screen.uuid: 2]
+            slow.screenPopUp.addItem(withTitle: screen.name); slow.desktopPopUp.addItems(withTitles: ["Desktop 1", "Desktop 2"])
+            slow.pick()
+            func pumpSmoke(_ done: () -> Bool) { let end = Date().addingTimeInterval(5); while !done() && Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) } }
+            @MainActor func shot(_ name: String) throws {
+                slow.window.contentView?.layoutSubtreeIfNeeded()
+                guard let content = slow.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { throw CocoaError(.fileWriteUnknown) }
+                content.cacheDisplay(in: content.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent(name + ".png"))
+            }
+            slow.windowReader = ReadCoordinator(context: { LiveReadContext(workspace: slow.contextProvider(), screenUUID: screen.uuid) }, read: { _ in
+                counter.reads += 1; usleep(400_000)
+                return LiveRead(report: ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), listing: Listing())
+            })
+            slow.refreshCurrentWindows(); slow.refreshCurrentWindows()
+            let reading = slow.isReadingWindows && slow.result.stringValue == readingWindowsText
+            try shot("reading-windows-1-reading")
+            pumpSmoke { !slow.isReadingWindows }
+            let done = counter.reads == 1 && slow.result.stringValue.hasPrefix("Refreshed · 1 windows") && slow.liveWindows.count == 1
+            try shot("reading-windows-2-done")
+            slow.refreshCurrentWindows(); desktop = 2
+            pumpSmoke { !slow.isReadingWindows }
+            let dropped = counter.reads == 2 && slow.result.stringValue.contains(desktopChangedText) && slow.liveWindows.count == 1
+            try shot("reading-windows-3-desktop-changed")
+            return reading && done && dropped
+        })
         check("live preview excludes the other display's windows", {
             let visual = LayoutsWindow(); visual.accessProvider = { true }
             var other = screen; other.uuid = "OTHER"; other.name = "Other display"; other.frame.x = 1200; other.visibleFrame.x = 1200

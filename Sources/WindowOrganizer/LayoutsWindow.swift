@@ -76,7 +76,11 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     let permissionButton = NSButton(title: "Enable window access…", target: nil, action: nil)
     var capturedDraft = false
     var contextProvider: () -> WorkspaceContext = { WorkspaceContext.live() }
-    var snapshotProvider: () -> (ListReport, Listing) = { snapshot() }
+    /// A test that sets this gets the synchronous read; the live default reads off the main thread (GPT-WO-S5).
+    var snapshotProvider: () -> (ListReport, Listing) = { snapshot() } { didSet { snapshotInjected = true } }
+    private(set) var snapshotInjected = false
+    var isReadingWindows: Bool { windowReader?.isReading == true }
+    var windowReader: ReadCoordinator<LiveReadContext, LiveRead>?
     var launchProviders: WorkspaceProviders = .live
     var applyProvider: (Plan, Listing, WorkspaceContext) -> ApplyResult = { RestoreSession.shared.apply($0, listing: $1, context: $2) }
     var contextTimer: Timer?
@@ -128,6 +132,9 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     override init() {
         super.init()
         snapshotProvider = { [weak self] in snapshot(screenUUID: self?.screen?.uuid) }
+        snapshotInjected = false
+        windowReader = ReadCoordinator(context: { [weak self] in LiveReadContext(workspace: self?.contextProvider() ?? WorkspaceContext.live(), screenUUID: self?.screen?.uuid) },
+                                       read: { readLiveWindows($0) })
         window.title = "Window Organizer"
         window.minSize = NSSize(width: 880, height: 730)
         window.isReleasedWhenClosed = false
@@ -392,6 +399,18 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         return (d.gapPoints > 0 ? " · gap \(d.gapPoints) pt" : "") + (d.sortsByName ? " · sorted by name" : d.manualOrder != nil ? " · your order" : "") + (d.isLive ? " · keep live on" : "")
     }
     @objc func refreshCurrentWindows() {
+        guard !snapshotInjected else { refreshCurrentWindowsSync(); return }
+        readLive(allowPartial: true) { [self] selection, report, listing, context in
+            manualDraft = nil; draftContext = nil; preview.selectedID = nil
+            previewMode.selectItem(at: 0)
+            liveWindows = report.windows.filter { $0.screenUUID == selection.screenUUID }
+            previewContext = context; lastPreviewTime = Date()
+            previewMessage = listing.warnings.isEmpty ? (liveWindows.isEmpty ? "No standard windows are visible on this screen." : "") : "Some windows unavailable: " + listing.warnings.joined(separator: " ")
+            refreshWorkspaceStatus()
+            result.stringValue = "Refreshed · \(liveWindows.count) windows · Live positions reloaded."
+        } failed: { [self] message in result.stringValue = "Refresh unavailable: \(message)" }
+    }
+    func refreshCurrentWindowsSync() {
         do {
             let (selection, report, listing, context) = try workspaceSnapshot(allowPartial: true)
             manualDraft = nil; draftContext = nil; preview.selectedID = nil
@@ -402,6 +421,28 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             refreshWorkspaceStatus()
             result.stringValue = "Refreshed · \(liveWindows.count) windows · Live positions reloaded."
         } catch { result.stringValue = "Refresh unavailable: \(error)" }
+    }
+    /// The editor's read off the main thread: "Reading windows…" shows at once, one read runs at a time, and a listing from
+    /// a read that crossed a desktop or screen change is dropped with desktopChangedText.
+    func readLive(allowPartial: Bool, ok: @escaping (WorkspaceSelection, ListReport, Listing, WorkspaceContext) -> Void, failed: @escaping (String) -> Void) {
+        guard let selection else { failed(String(describing: WorkspaceError.screenDisconnected)); return }
+        let context = contextProvider()
+        guard context.screens == screens else { failed(String(describing: WorkspaceError.screenDisconnected)); return }
+        guard selection.isVisible(desktops: context.desktops) else { failed(String(describing: WorkspaceError.desktopNotVisible)); return }
+        result.stringValue = readingWindowsText
+        windowReader?.request { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .contextChanged: failed(desktopChangedText)
+            case .listing(let read, let after):
+                var report = read.report
+                guard report.trusted else { failed("Enable window access in Accessibility settings first."); return }
+                guard allowPartial || read.listing.warnings.isEmpty else { failed(read.listing.warnings.joined(separator: " ")); return }
+                report.desktop = SkyLight.desktop(screens: after.workspace.screens)
+                if result.stringValue == readingWindowsText { result.stringValue = "" }
+                ok(selection, report, read.listing, after.workspace)
+            }
+        }
     }
     @objc func resetDraft() { manualDraft = nil; draftContext = nil; lastPreset = nil; result.stringValue = ""; refreshLivePreview(); refreshWorkspaceStatus() }
     @objc func applyAndSave() {
@@ -572,6 +613,20 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     }
 
     @objc func refreshLivePreview() {
+        guard !snapshotInjected else { refreshLivePreviewSync(); return }
+        lastPreviewTime = Date()
+        readLive(allowPartial: true) { [self] _, report, listing, context in
+            liveWindows = report.windows.filter { $0.screenUUID == screen?.uuid }
+            previewContext = context
+            previewMessage = listing.warnings.isEmpty ? (liveWindows.isEmpty ? "No standard windows are visible on this screen." : "") : "Some windows unavailable: " + listing.warnings.joined(separator: " ")
+            refreshWorkspaceStatus()
+        } failed: { [self] message in
+            if message != desktopChangedText { liveWindows = []; previewContext = nil }
+            previewMessage = message
+            refreshWorkspaceStatus()
+        }
+    }
+    func refreshLivePreviewSync() {
         lastPreviewTime = Date()
         do {
             let (_, report, listing, context) = try workspaceSnapshot(allowPartial: true)
@@ -1008,3 +1063,17 @@ final class TopStackView: NSStackView { override var isFlipped: Bool { true } }
 
 @MainActor
 final class TopDocumentView: NSView { override var isFlipped: Bool { true } }
+
+let readingWindowsText = "Reading windows…"
+
+/// What a live read must see unchanged from start to finish: screens, desktops and the selected screen.
+struct LiveReadContext: Equatable, Sendable { var workspace: WorkspaceContext; var screenUUID: String? }
+
+/// A Listing holds AXUIElements, which are not Sendable; it is only ever read after the background read has finished.
+struct LiveRead: @unchecked Sendable { var report: ListReport; var listing: Listing }
+
+func readLiveWindows(_ context: LiveReadContext) -> LiveRead {
+    let trusted = Permission.trusted
+    let listing = trusted ? listWindows(screens: context.workspace.screens, screenUUID: context.screenUUID) : Listing()
+    return LiveRead(report: ListReport(trusted: trusted, desktop: nil, screens: context.workspace.screens, windows: listing.windows), listing: listing)
+}
