@@ -204,6 +204,43 @@ func runUISmoke() -> Int32 {
             }
             return true
         })
+        check("another screen setup's layout is listed read-only and Use here copies it without touching the original (shots)", {
+            let savedBefore = try Data(contentsOf: layoutStore().file)
+            defer { try? savedBefore.write(to: layoutStore().file) }  // later checks read the layouts of the shared editor
+            var otherScreen = screen; otherScreen.uuid = "OTHER-SCREEN"; otherScreen.name = "LG"
+            let twoScreens = ScreenSetup(screens: [screen, otherScreen])
+            let ws = [WindowInfo(windowID: 31, bundleID: "com.apple.Terminal", title: "Build", frame: Frame(x: 20, y: 40, width: 280, height: 400), screenUUID: screen.uuid, order: 0, appName: "Terminal")]
+            var layouts = Layouts(); layouts.set(remember(ws, on: screen), setup: twoScreens, desktop: 3, screen: screen.uuid); try layoutStore().save(layouts)
+            let original = try Data(contentsOf: layoutStore().file)
+            let other = LayoutsWindow(); other.accessProvider = { false }
+            other.contextProvider = { WorkspaceContext(screens: [screen], counts: [screen.uuid: 2], desktops: [screen.uuid: 1], identities: []) }
+            other.screens = [screen]; other.spaces = [screen.uuid: 2]
+            other.screenPopUp.addItem(withTitle: screen.name); other.desktopPopUp.addItems(withTitles: ["Desktop 1", "Desktop 2"])
+            var asked: [String] = []
+            other.confirmUseHere = { asked.append($0); return true }
+            other.pick()
+            @MainActor func shot(_ name: String) throws {
+                other.window.contentView?.layoutSubtreeIfNeeded()
+                guard let content = other.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { throw CocoaError(.fileWriteUnknown) }
+                content.cacheDisplay(in: content.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent(name + ".png"))
+            }
+            let listed = other.otherEntries.count == 1 && other.otherSetupsList.arrangedSubviews.count == 2
+            let words = other.otherEntries.first.map { OtherSetupLine.text($0, screens: [screen]) } ?? ""
+            let worded = words == "2 screens, desktop 3 · a screen not connected + \(screen.name) · 1 window"  // the setup key sorts the UUIDs
+            try shot("other-setups-1-listed")
+            other.useHerePressed(other.otherSetupsList.arrangedSubviews.compactMap { ($0 as? NSStackView)?.arrangedSubviews.last as? NSButton }[0])
+            let copied = other.result.stringValue.hasPrefix("Copied to ") && asked.count == 1 && asked[0].hasPrefix("Copy this layout to ")
+            let stored = try layoutStore().load()
+            let here = stored.arrangement(setup: ScreenSetup(screens: [screen]), desktop: 1, screen: screen.uuid) != nil
+            let kept = stored.setups[twoScreens.key] == (try JSONDecoder().decode(Layouts.self, from: original)).setups[twoScreens.key]
+            try shot("other-setups-2-copied")
+            let nowTaken = other.otherSetupsList.arrangedSubviews.compactMap { ($0 as? NSStackView)?.arrangedSubviews.last as? NSButton }.allSatisfy { !$0.isEnabled }
+            guard listed && worded && copied && here && kept && nowTaken else {
+                throw NSError(domain: "other", code: 1, userInfo: [NSLocalizedDescriptionKey: "listed \(listed) worded \(worded) [\(words)] copied \(copied) [\(other.result.stringValue)] here \(here) kept \(kept) nowTaken \(nowTaken)"])
+            }
+            return true
+        })
         check("live preview excludes the other display's windows", {
             let visual = LayoutsWindow(); visual.accessProvider = { true }
             var other = screen; other.uuid = "OTHER"; other.name = "Other display"; other.frame.x = 1200; other.visibleFrame.x = 1200

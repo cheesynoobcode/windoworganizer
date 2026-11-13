@@ -106,6 +106,15 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     var screens: [ScreenInfo] = []
     var spaces: [String: Int] = [:]
     var layouts = Layouts()
+    /// GPT-WO-S7: the read-only "Other screen setups" section and the question before a copy (a test answers it).
+    let otherSetupsList = NSStackView()
+    var otherEntries: [OtherSetupEntry] = []
+    var confirmUseHere: (String) -> Bool = { question in
+        let alert = NSAlert(); alert.messageText = question
+        alert.informativeText = "This adds a copy here. The other layout stays as it is."
+        alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Use here")
+        return alert.runModal() == .alertSecondButtonReturn
+    }
     var editor: ZoneEditor?
     /// App rules changed since the last load: app → its new rule, or nil when removed. Written by Save.
     var ruleEdits: [String: AppRule?] = [:]
@@ -292,7 +301,8 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         result.font = .systemFont(ofSize: 12); result.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         previewCaption.font = .systemFont(ofSize: 12)
         let resultRow = row([result, retryButton])
-        let root = NSStackView(views: [header, stepOne, screenCards, contextTip, arrangeHeader, toolbar, gapLine, liveLine, preview, previewCaption, footer, resultRow])
+        otherSetupsList.orientation = .vertical; otherSetupsList.alignment = .leading; otherSetupsList.spacing = 6
+        let root = NSStackView(views: [header, stepOne, screenCards, contextTip, arrangeHeader, toolbar, gapLine, liveLine, preview, previewCaption, footer, resultRow, otherSetupsList])
         root.orientation = .vertical; root.alignment = .leading; root.spacing = 15
         root.edgeInsets = NSEdgeInsets(top: 24, left: 28, bottom: 20, right: 28)
         root.translatesAutoresizingMaskIntoConstraints = false
@@ -860,6 +870,47 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         loadedSettings = draftSettings
     }
 
+    /// Lists what is stored for other screen setups and desktops, read-only, each with "Use here".
+    func refreshOtherSetups() {
+        otherSetupsList.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        otherEntries = readFailed || screen == nil ? [] : layouts.otherEntries(current: ScreenSetup(screens: screens), desktop: desktopNumber)
+        guard !otherEntries.isEmpty else { return }
+        let title = NSTextField(labelWithString: "Other screen setups")
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        otherSetupsList.addArrangedSubview(title)
+        for (i, entry) in otherEntries.enumerated() {
+            let line = NSTextField(labelWithString: OtherSetupLine.text(entry, screens: screens))
+            line.font = .systemFont(ofSize: 12); line.lineBreakMode = .byTruncatingTail
+            let button = NSButton(title: "Use here", target: self, action: #selector(useHerePressed(_:)))
+            button.tag = i; button.controlSize = .small; button.bezelStyle = .rounded
+            let taken = screen.map { layouts.arrangement(setup: ScreenSetup(screens: screens), desktop: desktopNumber, screen: $0.uuid) != nil } ?? true
+            button.isEnabled = !taken
+            button.toolTip = taken ? "\(screen?.name ?? "This screen"), \(desktopName) already has a layout. Nothing is replaced." : nil
+            let row = NSStackView(views: [line, button]); row.spacing = 10; row.alignment = .centerY
+            otherSetupsList.addArrangedSubview(row)
+        }
+    }
+
+    @objc func useHerePressed(_ sender: NSButton) {
+        guard otherEntries.indices.contains(sender.tag), let screen, !readFailed else { return }
+        guard !dirty else { result.stringValue = "Not copied: save or revert your changes here first."; return }
+        let entry = otherEntries[sender.tag]
+        guard confirmUseHere("Copy this layout to \(screen.name), \(desktopName)?") else { return }
+        do {
+            let store = layoutStore()
+            var fresh = try store.load()
+            if let why = fresh.useHere(entry, setup: ScreenSetup(screens: screens), desktop: desktopNumber, screen: screen.uuid) {
+                result.stringValue = why == .occupied ? "Not copied: \(screen.name), \(desktopName) already has a layout." : "Not copied: that is this layout."
+                return
+            }
+            try store.save(fresh)
+            pick()
+            result.stringValue = "Copied to \(screen.name), \(desktopName). The other layout is unchanged."
+        } catch {
+            result.stringValue = "Not copied: \(error)"
+        }
+    }
+
     @objc func save() {
         window.makeFirstResponder(nil)
         guard let editor = canvas.editor, let screen, !readFailed else { return }
@@ -892,6 +943,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     /// Redraws and rebuilds the member list for the selected zone: the running apps with windows, plus members not running.
     func refresh() {
         editor = canvas.editor
+        refreshOtherSetups()
         refreshWorkspaceStatus()
         let zoneMode = mode.indexOfSelectedItem == 1
         middle.isHidden = !zoneMode; snapshotScroll.isHidden = mode.indexOfSelectedItem != 0
