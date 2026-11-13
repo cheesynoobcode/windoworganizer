@@ -11,6 +11,7 @@ struct AXMover: WindowMover {
     let elements: [Int: AXUIElement]
 
     func frame(of id: Int) -> Frame? { elements[id].flatMap(axFrame) }
+    func isOpen(_ id: Int) -> Bool { elements[id] != nil }
 
     func setFrame(_ f: Frame, of id: Int) {
         guard f.isValid, let e = elements[id] else { return }

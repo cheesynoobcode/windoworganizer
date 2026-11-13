@@ -83,7 +83,8 @@ let restoreChecks: [(String, @Sendable () throws -> Void)] = [
         mover.minimum = [3: (500, 400)]
         mover.stuck = [4]
         let r = applyPlan(plan, mover: mover)
-        try expectEqual(r, ApplyResult(placed: 2, keptMinimum: 1, failed: 1, unchanged: 5, notOpen: 1))
+        try expectEqual(r, ApplyResult(placed: 2, keptMinimum: 1, failed: 1, unchanged: 5, notOpen: 1,
+                                       failures: [FailedMove(move: plan.moves[3], reason: .refusedSize)]))
         try expectEqual(mover.sets, [1, 2, 2, 3, 3, 4, 4])
         try expectEqual(mover.frames[3], Frame(x: 100, y: 100, width: 500, height: 400))
     }),

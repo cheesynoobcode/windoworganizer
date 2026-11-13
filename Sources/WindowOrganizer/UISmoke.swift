@@ -158,6 +158,52 @@ func runUISmoke() -> Int32 {
             try shot("reading-windows-3-desktop-changed")
             return reading && done && dropped
         })
+        check("a partial Restore names the windows that did not move and Try these again retries only those (shots)", {
+            final class SmokeMover: WindowMover, @unchecked Sendable {
+                var frames: [Int: Frame], silent: Set<Int> = [], gone: Set<Int> = [], sets: [Int] = []
+                init(_ ws: [WindowInfo]) { frames = Dictionary(uniqueKeysWithValues: ws.map { ($0.windowID, $0.frame) }) }
+                func isOpen(_ id: Int) -> Bool { !gone.contains(id) }
+                func frame(of id: Int) -> Frame? { gone.contains(id) || silent.contains(id) ? nil : frames[id] }
+                func setFrame(_ f: Frame, of id: Int) { sets.append(id); if !gone.contains(id) && !silent.contains(id) { frames[id] = f } }
+            }
+            let apps = [("com.apple.Terminal", "Terminal", "Build"), ("com.apple.Safari", "Safari", "News"), ("com.apple.mail", "Mail", "Inbox")]
+            let placed = apps.enumerated().map { i, a in WindowInfo(windowID: 10 + i, bundleID: a.0, title: a.2, frame: Frame(x: 20 + Double(i) * 300, y: 40, width: 280, height: 400), screenUUID: screen.uuid, order: i, appName: a.1) }
+            let shifted = placed.map { var s = $0; s.frame = Frame(x: s.frame.x + 40, y: 200, width: 280, height: 400); return s }
+            let savedBefore = try Data(contentsOf: layoutStore().file)
+            defer { try? savedBefore.write(to: layoutStore().file) }  // later checks read the layouts of the shared editor
+            var layouts = Layouts(); layouts.set(remember(placed, on: screen), setup: setup, desktop: 1, screen: screen.uuid); try layoutStore().save(layouts)
+            let mover = SmokeMover(shifted); mover.silent = [11]; mover.gone = [12]
+            let partial = LayoutsWindow(); partial.accessProvider = { true }
+            partial.launchProviders.running = { Set(apps.map(\.0)) }; partial.launchProviders.launch = { _, _ in }  // never reaches the real launcher
+            partial.contextProvider = { WorkspaceContext(screens: [screen], counts: [screen.uuid: 2], desktops: [screen.uuid: 1], identities: []) }
+            partial.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: shifted), Listing()) }
+            partial.applyProvider = { plan, _, _ in applyPlan(plan, mover: mover) }
+            partial.screens = [screen]; partial.spaces = [screen.uuid: 2]
+            partial.screenPopUp.addItem(withTitle: screen.name); partial.desktopPopUp.addItems(withTitles: ["Desktop 1", "Desktop 2"])
+            partial.pick()
+            @MainActor func shot(_ name: String) throws {
+                partial.window.contentView?.layoutSubtreeIfNeeded()
+                guard let content = partial.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { throw CocoaError(.fileWriteUnknown) }
+                content.cacheDisplay(in: content.bounds, to: bitmap)
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent(name + ".png"))
+            }
+            partial.restoreCurrent()
+            let line = partial.result.stringValue
+            let named = line.contains("2 could not be moved") && line.contains("Safari \"News\" (not answering)") && line.contains("Mail \"Inbox\" (gone)")
+            let offered = !partial.retryButton.isHidden && partial.retryFailures.map(\.windowID) == [11, 12]
+            try shot("partial-restore-1-failed-listed")
+            mover.sets = []; mover.silent = []
+            partial.retryFailed()
+            let onlyThose = Set(mover.sets).contains(11) && Set(mover.sets).isSubset(of: [11, 12])  // the moved window 10 is never touched
+            let again = partial.result.stringValue
+            let second = again.hasPrefix("Tried again: ") && again.contains("1 could not be moved") && again.contains("Mail \"Inbox\" (gone)") && partial.retryFailures.map(\.windowID) == [12]
+            try shot("partial-restore-2-tried-again")
+            partial.result.stringValue = "Saved"; partial.refreshWorkspaceStatus()
+            guard named && offered && onlyThose && second && partial.retryButton.isHidden else {
+                throw NSError(domain: "partial", code: 1, userInfo: [NSLocalizedDescriptionKey: "named \(named) offered \(offered) onlyThose \(onlyThose) second \(second) hidden \(partial.retryButton.isHidden) line [\(line)] again [\(again)]"])
+            }
+            return true
+        })
         check("live preview excludes the other display's windows", {
             let visual = LayoutsWindow(); visual.accessProvider = { true }
             var other = screen; other.uuid = "OTHER"; other.name = "Other display"; other.frame.x = 1200; other.visibleFrame.x = 1200
