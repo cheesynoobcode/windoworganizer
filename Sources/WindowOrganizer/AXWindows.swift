@@ -51,7 +51,7 @@ func visibleWindows(_ info: [[String: Any]], on selected: String?, screens: [Scr
     }
 }
 
-@MainActor
+/// Runs off the main actor (GPT-WO-S5): N unresponsive apps cost N × timeoutPerApp, so the UI reads it through a ReadCoordinator.
 func listWindows(screens: [ScreenInfo], screenUUID selected: String? = nil, timeoutPerApp: Float = 0.2) -> Listing {
     var out = Listing()
     guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {

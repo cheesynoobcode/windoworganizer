@@ -120,6 +120,12 @@ func runUISmoke() -> Int32 {
             let corner = view.previewRect(Frame(x: 1600, y: -200, width: 800, height: 450))
             return abs(display.width / display.height - 1600.0 / 900) < 0.001 && corner.minX == display.minX && corner.minY == display.minY && abs(corner.width - display.width / 2) < 0.001 && abs(corner.height - display.height / 2) < 0.001
         })
+        check("the editor reads windows off the main thread unless a test injects a reader", {
+            let live = LayoutsWindow()
+            let injected = LayoutsWindow()
+            injected.snapshotProvider = { (ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), Listing()) }
+            return !live.snapshotInjected && live.windowReader != nil && injected.snapshotInjected && !live.isReadingWindows
+        })
         check("live preview excludes the other display's windows", {
             let visual = LayoutsWindow(); visual.accessProvider = { true }
             var other = screen; other.uuid = "OTHER"; other.name = "Other display"; other.frame.x = 1200; other.visibleFrame.x = 1200
