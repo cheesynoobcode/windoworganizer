@@ -148,6 +148,23 @@ public func onlyWindow(_ plan: Plan, _ id: Int) -> Plan {
 public protocol WindowMover {
     func frame(of id: Int) -> Frame?
     func setFrame(_ frame: Frame, of id: Int)
+    /// False when the window no longer exists (told apart from one that only does not answer).
+    func isOpen(_ id: Int) -> Bool
+}
+
+public extension WindowMover {
+    func isOpen(_ id: Int) -> Bool { true }
+}
+
+/// Why a window did not move (GPT-WO-S6): the app did not answer, kept or refused the size, or the window is gone.
+public enum FailReason: String, Equatable, Sendable { case notAnswering, refusedSize, gone }
+
+/// A move that did not succeed, kept whole so one retry can run it again through the same guarded path.
+public struct FailedMove: Equatable, Sendable {
+    public var move: Move
+    public var reason: FailReason
+    public var windowID: Int { move.windowID }
+    public init(move: Move, reason: FailReason) { self.move = move; self.reason = reason }
 }
 
 public struct ApplyResult: Equatable, Sendable {
@@ -161,10 +178,12 @@ public struct ApplyResult: Equatable, Sendable {
     public var cancelled: Int
     /// Windows that kept a larger size and were moved back inside their screen (they overlap a neighbour); also counted in keptMinimum.
     public var shiftedIDs: [Int]
+    /// The moves counted in `failed`, in plan order, with their reason class.
+    public var failures: [FailedMove]
 
-    public init(placed: Int, keptMinimum: Int, failed: Int, unchanged: Int, notOpen: Int, cancelled: Int = 0, shiftedIDs: [Int] = []) {
+    public init(placed: Int, keptMinimum: Int, failed: Int, unchanged: Int, notOpen: Int, cancelled: Int = 0, shiftedIDs: [Int] = [], failures: [FailedMove] = []) {
         self.placed = placed; self.keptMinimum = keptMinimum; self.failed = failed
-        self.unchanged = unchanged; self.notOpen = notOpen; self.cancelled = cancelled; self.shiftedIDs = shiftedIDs
+        self.unchanged = unchanged; self.notOpen = notOpen; self.cancelled = cancelled; self.shiftedIDs = shiftedIDs; self.failures = failures
     }
 }
 
@@ -175,9 +194,13 @@ public struct ApplyResult: Equatable, Sendable {
 /// `stillValid` is asked before each move; on the first false no further window is touched and the rest count as cancelled.
 public func applyPlan(_ plan: Plan, mover: WindowMover, stillValid: () -> Bool = { true }) -> ApplyResult {
     var r = ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: plan.unchanged, notOpen: plan.skipped.count)
+    func fail(_ move: Move, _ reason: FailReason? = nil) {
+        r.failed += 1
+        r.failures.append(FailedMove(move: move, reason: reason ?? (mover.isOpen(move.windowID) ? .notAnswering : .gone)))
+    }
     for (index, move) in plan.moves.enumerated() {
         guard stillValid() else { r.cancelled = plan.moves.count - index; break }
-        guard move.to.isValid else { r.failed += 1; continue }
+        guard move.to.isValid else { fail(move, .refusedSize); continue }
         let area = move.area.flatMap { $0.isValid ? $0 : nil }
         let to = area.map { move.to.contained(in: $0) } ?? move.to
         mover.setFrame(to, of: move.windowID)
@@ -185,22 +208,27 @@ public func applyPlan(_ plan: Plan, mover: WindowMover, stillValid: () -> Bool =
         if let f = now, close(f, to) { r.placed += 1; continue }
         mover.setFrame(to, of: move.windowID)
         now = mover.frame(of: move.windowID)
-        guard let f = now else { r.failed += 1; continue }
+        guard let f = now else { fail(move); continue }
         if close(f, to) { r.placed += 1; continue }
         let atLeastTile = f.width >= to.width - 1 && f.height >= to.height - 1
         let sameOrigin = abs(f.x - to.x) <= 1 && abs(f.y - to.y) <= 1
-        guard atLeastTile else { r.failed += 1; continue }
+        guard atLeastTile else { fail(move, .refusedSize); continue }
         guard let area else {
-            if sameOrigin { r.keptMinimum += 1 } else { r.failed += 1 }
+            if sameOrigin { r.keptMinimum += 1 } else { fail(move, .refusedSize) }
             continue
         }
         let fitted = Frame(x: to.x, y: to.y, width: f.width, height: f.height).contained(in: area)
-        if close(fitted, f) { if sameOrigin { r.keptMinimum += 1 } else { r.failed += 1 }; continue }
+        if close(fitted, f) { if sameOrigin { r.keptMinimum += 1 } else { fail(move, .refusedSize) }; continue }
         mover.setFrame(fitted, of: move.windowID)
         if let g = mover.frame(of: move.windowID), g.isInside(area) { r.keptMinimum += 1; r.shiftedIDs.append(move.windowID) }
-        else { r.failed += 1 }
+        else { fail(move, .refusedSize) }
     }
     return r
+}
+
+/// The plan for "Try these again": only the moves that failed, nothing else.
+public func retryPlan(_ r: ApplyResult) -> Plan {
+    Plan(moves: r.failures.map(\.move), skipped: [], unchanged: 0)
 }
 
 /// The app names of the windows `applyPlan` had to move inside their screen, once each, in order.
@@ -216,7 +244,7 @@ public func shiftedApps(_ r: ApplyResult, in windows: [WindowInfo]) -> [String] 
 
 /// The menu's last-result line (plan §4): what happened, on which desktop, when.
 public enum ResultLine {
-    public static func restored(_ r: ApplyResult, starting: [String] = [], shifted: [String] = [], desktop: Int?, at time: String) -> String {
+    public static func restored(_ r: ApplyResult, starting: [String] = [], shifted: [String] = [], failedList: String = "", desktop: Int?, at time: String) -> String {
         if r.cancelled > 0 { return "Stopped: the desktop changed. Placed \(r.placed + r.keptMinimum), \(r.cancelled) left as they were · \(time)" }
         let inPlace = r.placed + r.unchanged
         var parts: [String] = []
@@ -231,11 +259,32 @@ public enum ResultLine {
                 let names = shifted.isEmpty ? "" : ": \(shifted.joined(separator: ", "))"
                 parts.append("\(moved) kept \(moved == 1 ? "its minimum size and was" : "their minimum size and were") moved inside the screen\(names)")
             }
-            if r.failed > 0 { parts.append("\(r.failed) could not be moved") }
+            if r.failed > 0 { parts.append("\(r.failed) could not be moved" + (failedList.isEmpty ? "" : " (\(failedList))")) }
             if r.notOpen > 0 { parts.append("\(r.notOpen) not open") }
         }
         if !starting.isEmpty { parts.append("starting \(starting.joined(separator: ", "))") }
         return "\(name(desktop)): \(parts.joined(separator: ", ")) · \(time)"
+    }
+
+    /// The windows that did not move, `app "title" (reason)`, at most five, then "and n more"; empty when none failed.
+    public static func notMoved(_ failures: [FailedMove], in windows: [WindowInfo], limit: Int = 5) -> String {
+        let shown = failures.prefix(limit).map { f -> String in
+            let w = windows.first { $0.windowID == f.windowID }
+            let app = w.map { $0.appName ?? $0.bundleID } ?? "a window"
+            let title = (w?.title).flatMap { $0.isEmpty ? nil : " \"\($0)\"" } ?? ""
+            return "\(app)\(title) (\(reasonText(f.reason)))"
+        }
+        guard !shown.isEmpty else { return "" }
+        let more = failures.count - shown.count
+        return shown.joined(separator: ", ") + (more > 0 ? ", and \(more) more" : "")
+    }
+    /// The one place the reason classes get their words.
+    public static func reasonText(_ r: FailReason) -> String {
+        switch r {
+        case .notAnswering: return "not answering"
+        case .refusedSize: return "refused the size"
+        case .gone: return "gone"
+        }
     }
 
     /// After a group was applied (WO-GROUPS-G3): what moved now, and the desktops that follow on their next visit.

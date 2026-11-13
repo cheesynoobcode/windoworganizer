@@ -118,6 +118,11 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
                                               ("Bottom half", UnitRect(x: 0, y: 0.5, width: 1, height: 0.5))]
     /// The line under the buttons: saved, or why not.
     let result = NSTextField(labelWithString: "")
+    /// "Try these again" (GPT-WO-S6): shown only beside the line that listed the windows that did not move, on the desktop it was made on.
+    let retryButton = NSButton(title: "Try these again", target: nil, action: nil)
+    private(set) var retryFailures: [FailedMove] = []
+    private var retryContext: WorkspaceContext?
+    private var retryLine = ""
 
     static func show() {
         let w = shown ?? LayoutsWindow()
@@ -150,6 +155,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         captureButton.target = self; captureButton.action = #selector(captureCurrent)
         arrangeButton.target = self; arrangeButton.action = #selector(arrangeCurrent)
         restoreButton.target = self; restoreButton.action = #selector(restoreCurrent)
+        retryButton.target = self; retryButton.action = #selector(retryFailed); retryButton.isHidden = true
         visibleButton.target = self; visibleButton.action = #selector(useVisibleDesktop)
         permissionButton.target = self; permissionButton.action = #selector(openPermissions)
         workspaceLabel.font = .boldSystemFont(ofSize: 14)
@@ -285,13 +291,14 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         result.maximumNumberOfLines = 2; result.lineBreakMode = .byTruncatingTail
         result.font = .systemFont(ofSize: 12); result.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         previewCaption.font = .systemFont(ofSize: 12)
-        let root = NSStackView(views: [header, stepOne, screenCards, contextTip, arrangeHeader, toolbar, gapLine, liveLine, preview, previewCaption, footer, result])
+        let resultRow = row([result, retryButton])
+        let root = NSStackView(views: [header, stepOne, screenCards, contextTip, arrangeHeader, toolbar, gapLine, liveLine, preview, previewCaption, footer, resultRow])
         root.orientation = .vertical; root.alignment = .leading; root.spacing = 15
         root.edgeInsets = NSEdgeInsets(top: 24, left: 28, bottom: 20, right: 28)
         root.translatesAutoresizingMaskIntoConstraints = false
         let content = NSView(); content.addSubview(root); window.contentView = content
         NSLayoutConstraint.activate([root.topAnchor.constraint(equalTo: content.topAnchor), root.bottomAnchor.constraint(equalTo: content.bottomAnchor), root.leadingAnchor.constraint(equalTo: content.leadingAnchor), root.trailingAnchor.constraint(equalTo: content.trailingAnchor)])
-        for view in [header, screenCards, arrangeHeader, toolbar, preview, footer, previewCaption, result] {
+        for view in [header, screenCards, arrangeHeader, toolbar, preview, footer, previewCaption, resultRow] {
             view.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -56).isActive = true
         }
         preview.setContentHuggingPriority(.defaultLow, for: .vertical)
@@ -471,7 +478,10 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             }
             let applied = applyProvider(Plan(moves: moves, skipped: [], unchanged: draft.count - moves.count), listing, context)
             guard applied.cancelled == 0 else { throw WorkspaceActionError(message: "The desktop changed while moving. Your preview is still here; try again.") }
-            guard applied.failed == 0 else { throw WorkspaceActionError(message: "Some windows could not be moved. Your preview is still here; try again.") }
+            guard applied.failed == 0 else {
+                result.stringValue = "Not saved: Some windows could not be moved\(notMovedSuffix(applied, report.windows)). Your preview is still here; try again."
+                offerRetry(applied, context: context); return
+            }
             let (_, after, _, afterContext) = try workspaceSnapshot()
             guard afterContext == context, Set(after.windows.filter { $0.screenUUID == selection.screenUUID }.map(\.windowID)) == Set(draft.map(\.windowID)) else { throw WorkspaceActionError(message: "The desktop changed before saving. Return and try again.") }
             let captured = try captureWorkspace(selection, windows: after.windows, screens: context.screens, desktops: context.desktops)
@@ -565,6 +575,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         saveCurrentButton.isEnabled = trusted && visible && !readFailed
         refreshPreviewButton.isEnabled = trusted && visible
         if previewContext != context { liveWindows = []; previewContext = nil }
+        refreshRetryButton()
         updatePreview()
         let saved = screen.flatMap { layouts.arrangement(setup: ScreenSetup(screens: screens), desktop: desktopNumber, screen: $0.uuid) }
         restoreButton.isEnabled = trusted && visible && !readFailed && saved != nil
@@ -705,8 +716,44 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             guard let plan = try planWorkspace(draft, selection: selection, windows: report.windows, screens: context.screens, desktops: context.desktops) else { return }
             let applied = applyProvider(plan, listing, context)
             mode.selectItem(at: 2); capturedDraft = true; refresh(); refreshLivePreview()
-            result.stringValue = ResultLine.restored(applied, shifted: shiftedApps(applied, in: report.windows), desktop: desktopNumber, at: clock()) + ". Save to keep this screen's automatic grid."
+            result.stringValue = ResultLine.restored(applied, shifted: shiftedApps(applied, in: report.windows),
+                                                     failedList: ResultLine.notMoved(applied.failures, in: report.windows), desktop: desktopNumber, at: clock()) + ". Save to keep this screen's automatic grid."
+            offerRetry(applied, context: context)
         } catch { result.stringValue = "Not arranged: \(error)" }
+    }
+
+    private func notMovedSuffix(_ r: ApplyResult, _ windows: [WindowInfo]) -> String {
+        let list = ResultLine.notMoved(r.failures, in: windows)
+        return list.isEmpty ? "" : ": \(list)"
+    }
+    /// Remembers what did not move and shows the button for it; the line is the one set right after this call.
+    private func offerRetry(_ r: ApplyResult, context: WorkspaceContext) {
+        retryFailures = r.failures; retryContext = r.failures.isEmpty ? nil : context
+        retryLine = result.stringValue; retryButton.isHidden = r.failures.isEmpty
+    }
+    /// Hides the button once its line is replaced or the screens or desktops changed; it never outlives the situation it was made for.
+    private func refreshRetryButton() {
+        guard !retryButton.isHidden else { return }
+        if result.stringValue != retryLine || retryContext != contextProvider() { retryButton.isHidden = true; retryFailures = []; retryContext = nil }
+    }
+    /// Runs only the moves that failed, through the same guarded read and the same applier; the windows that moved stay as they are.
+    @objc func retryFailed() {
+        guard let before = retryContext, !retryFailures.isEmpty else { return }
+        do {
+            let (_, report, listing, context) = try workspaceSnapshot()
+            guard context == before else { throw WorkspaceActionError(message: desktopChangedText) }
+            var moves: [Move] = [], gone: [FailedMove] = []
+            for f in retryFailures {
+                guard let live = report.windows.first(where: { $0.windowID == f.windowID }) else { gone.append(FailedMove(move: f.move, reason: .gone)); continue }
+                moves.append(Move(windowID: f.windowID, from: live.frame, to: f.move.to, area: f.move.area))
+            }
+            var applied = moves.isEmpty ? ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: 0, notOpen: 0) : applyProvider(Plan(moves: moves, skipped: [], unchanged: 0), listing, context)
+            applied.failed += gone.count; applied.failures += gone
+            result.stringValue = "Tried again: " + ResultLine.restored(applied, shifted: shiftedApps(applied, in: report.windows),
+                                                  failedList: ResultLine.notMoved(applied.failures, in: report.windows), desktop: desktopNumber, at: clock())
+            offerRetry(applied, context: context)
+            refreshLivePreview()
+        } catch { result.stringValue = "Not tried again: \(error)"; retryLine = result.stringValue }
     }
 
     @objc func restoreCurrent() {
@@ -723,8 +770,10 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
                     : ResultLine.restored(ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: 0, notOpen: 0), starting: starting, desktop: desktopNumber, at: clock())
                 return
             }
-            result.stringValue = { let applied = applyProvider(plan, listing, context)
-                return ResultLine.restored(applied, starting: starting, shifted: shiftedApps(applied, in: report.windows), desktop: desktopNumber, at: clock()) }()
+            let applied = applyProvider(plan, listing, context)
+            result.stringValue = ResultLine.restored(applied, starting: starting, shifted: shiftedApps(applied, in: report.windows),
+                                                     failedList: ResultLine.notMoved(applied.failures, in: report.windows), desktop: desktopNumber, at: clock())
+            offerRetry(applied, context: context)
             refreshLivePreview()
         } catch { result.stringValue = "Not restored: \(error)" }
     }
