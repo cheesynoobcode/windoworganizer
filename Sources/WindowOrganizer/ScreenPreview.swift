@@ -6,6 +6,9 @@ struct PreviewWindow: Equatable {
     var title: String
     var bundleID: String
     var windowID: Int? = nil
+    /// The card's app and its window title, for the accessibility label (the drawn title joins them).
+    var app = ""
+    var detail = ""
 }
 
 /// Interactive geometry only; this view never moves another app itself.
@@ -40,8 +43,8 @@ final class ScreenPreview: NSView {
         guard scale > 0 else { return frame }
         var next = frame
         if resize {
-            next.width = max(min(180, screen.visibleFrame.width), frame.width + delta.x / scale)
-            next.height = max(min(120, screen.visibleFrame.height), frame.height + delta.y / scale)
+            next.width = max(min(CardSettings.minimumWidth, screen.visibleFrame.width), frame.width + delta.x / scale)
+            next.height = max(min(CardSettings.minimumHeight, screen.visibleFrame.height), frame.height + delta.y / scale)
         } else { next.x += delta.x / scale; next.y += delta.y / scale }
         return next.contained(in: screen.visibleFrame)
     }
@@ -68,22 +71,56 @@ final class ScreenPreview: NSView {
         guard scale > 0 else { return }
         dropped?(drag.id, CGPoint(x: screen.frame.x + (point.x - display.minX) / scale, y: screen.frame.y + (point.y - display.minY) / scale))
     }
+    /// The cards that can be selected, in the order they are drawn and read out (front first).
+    var selectableIDs: [Int] { windows.compactMap(\.windowID) }
+    func select(_ id: Int) { selectedID = id; window?.makeFirstResponder(self); updateAccessibility() }
     override func keyDown(with event: NSEvent) {
-        guard editable, let id = selectedID, let item = windows.first(where: { $0.windowID == id }) else { super.keyDown(with: event); return }
-        let step: CGFloat = event.modifierFlags.contains(.shift) ? 20 : 4
-        let delta: CGPoint
+        guard editable else { super.keyDown(with: event); return }
+        if event.keyCode == 48 { tab(backwards: event.modifierFlags.contains(.shift)); return }
+        guard let id = selectedID, let item = windows.first(where: { $0.windowID == id }), let screen else { super.keyDown(with: event); return }
+        let key: CardKey
         switch event.keyCode {
-        case 123: delta = CGPoint(x: -step, y: 0)
-        case 124: delta = CGPoint(x: step, y: 0)
-        case 125: delta = CGPoint(x: 0, y: step)
-        case 126: delta = CGPoint(x: 0, y: -step)
+        case 123: key = .left
+        case 124: key = .right
+        case 125: key = .down
+        case 126: key = .up
         default: super.keyDown(with: event); return
         }
-        changed?(id, transformed(item.frame, delta: delta, resize: event.modifierFlags.contains(.option)))
+        let resize = !event.modifierFlags.isDisjoint(with: [.shift, .option])
+        changed?(id, CardKeys.apply(key, resize: resize, to: item.frame, in: screen.visibleFrame))
     }
+    /// Tab goes to the next card; past the first or last card focus leaves the canvas.
+    private func tab(backwards: Bool) {
+        let ids = selectableIDs
+        if let index = CardOrder.next(after: selectedID.flatMap { ids.firstIndex(of: $0) }, count: ids.count, backwards: backwards) {
+            select(ids[index])
+        } else {
+            selectedID = nil; updateAccessibility()
+            if backwards { window?.selectPreviousKeyView(self) } else { window?.selectNextKeyView(self) }
+        }
+    }
+    /// One accessibility element per card; the canvas stays their group.
+    private final class CardElement: NSAccessibilityElement {
+        var onPress: () -> Void = {}
+        override func accessibilityPerformPress() -> Bool { onPress(); return true }
+    }
+    private var cardElements: [CardElement] = []
+    var screenNumber = 1
+    override func accessibilityChildren() -> [Any]? { cardElements }
     func updateAccessibility() {
         setAccessibilityElement(true); setAccessibilityRole(.group)
-        setAccessibilityLabel("Screen canvas: \(screen?.name ?? "no screen"). \(windows.count) windows. \(editable ? "Drag windows to move, drag bottom-right corners to resize. Arrow keys move; Option resizes." : message)")
+        let count = windows.count == 1 ? Words.raw("canvas.windows.one") : Words.text("canvas.windows.other", windows.count)
+        setAccessibilityLabel(Words.text("canvas.label", screen?.name ?? Words.raw("canvas.noScreen"), count, editable ? Words.raw("canvas.help.editable") : message))
+        cardElements = windows.map { item in
+            let element = CardElement()
+            element.setAccessibilityParent(self); element.setAccessibilityRole(.button)
+            element.setAccessibilityLabel(item.app.isEmpty ? item.title : item.detail.isEmpty ? item.app : CardText.label(app: item.app, title: item.detail))
+            element.setAccessibilityValue(CardText.value(item.frame, screenNumber: screenNumber))
+            element.setAccessibilityFrameInParentSpace(previewRect(item.frame))
+            element.setAccessibilitySelected(editable && item.windowID != nil && item.windowID == selectedID)
+            if editable, let id = item.windowID { element.onPress = { [weak self] in self?.select(id) } }
+            return element
+        }
         needsDisplay = true
     }
     override func draw(_ dirtyRect: NSRect) {

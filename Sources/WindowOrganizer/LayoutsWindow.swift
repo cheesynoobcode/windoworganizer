@@ -651,6 +651,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     func updatePreview() {
         preview.editable = accessProvider() && selection?.isVisible(desktops: contextProvider().desktops) == true && previewMode.indexOfSelectedItem == 0 && !readFailed
         preview.screen = screen
+        preview.screenNumber = (screen.flatMap { s in screens.firstIndex { $0.uuid == s.uuid } } ?? 0) + 1
         let saved = screen.flatMap { layouts.arrangement(setup: ScreenSetup(screens: screens), desktop: desktopNumber, screen: $0.uuid) }
         let showSaved = previewMode.indexOfSelectedItem == 1
         if showSaved {
@@ -658,7 +659,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             case .snapshot(let ps)?:
                 preview.windows = ps.map { p in
                     let frame = p.screenUUID == screen?.uuid && p.visibleFrame == screen?.visibleFrame ? p.pixel : p.fraction.frame(in: screen!.visibleFrame)
-                    return PreviewWindow(frame: frame, title: "\(appName(p.matcher.bundleID)) · \(p.matcher.seenTitle ?? "Window")", bundleID: p.matcher.bundleID)
+                    return PreviewWindow(frame: frame, title: "\(appName(p.matcher.bundleID)) · \(p.matcher.seenTitle ?? "Window")", bundleID: p.matcher.bundleID, app: appName(p.matcher.bundleID), detail: p.matcher.seenTitle ?? "Window")
                 }
                 preview.message = "No window positions saved yet."
             case .zones(let zones)?:
@@ -669,7 +670,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             }
             previewCaption.stringValue = "Your saved layout · Choose Restore to put open windows back here."
         } else {
-            preview.windows = (manualDraft ?? liveWindows).map { PreviewWindow(frame: $0.frame, title: "\(appName($0.bundleID)) · \($0.title)", bundleID: $0.bundleID, windowID: $0.windowID) }
+            preview.windows = (manualDraft ?? liveWindows).map { PreviewWindow(frame: $0.frame, title: "\(appName($0.bundleID)) · \($0.title)", bundleID: $0.bundleID, windowID: $0.windowID, app: appName($0.bundleID), detail: $0.title) }
             preview.message = !accessProvider() ? "Enable window access to see your windows here." : previewMessage.isEmpty ? "Refresh windows to see their positions." : previewMessage
             previewCaption.stringValue = "\((manualDraft ?? liveWindows).count) windows\(manualDraft == nil ? "" : " in preview") · Drag to move. Pull a bottom-right corner to resize."
             if !liveWindows.isEmpty && !previewMessage.isEmpty { previewCaption.stringValue += " " + previewMessage }

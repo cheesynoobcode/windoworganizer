@@ -73,6 +73,21 @@ class MakeAppChecks(unittest.TestCase):
             self.assertEqual(keep.read_text(), 'old')
             self.assertTrue((app / 'Contents' / 'Info.plist').is_file())
 
+    def test_bundle_ships_the_resource_bundle_next_to_the_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            build = tmp / 'release'
+            words = build / 'WindowOrganizer_WindowOrganizerCore.bundle'
+            words.mkdir(parents=True)
+            (words / 'words.json').write_text('{"words":{}}')
+            (build / 'WindowOrganizer').write_text('bin')
+            app = tmp / 'out' / 'WindowOrganizer.app'
+            make_app.bundle(build / 'WindowOrganizer', app, '0.2')
+            make_app.bundle(build / 'WindowOrganizer', app, '0.2')   # a second bundling replaces, never nests
+            shipped = app / 'Contents' / 'Resources' / words.name
+            self.assertEqual((shipped / 'words.json').read_text(), '{"words":{}}')
+            self.assertFalse((shipped / words.name).exists())
+
     def test_default_app_lives_in_the_dev_state_folder(self):
         self.assertEqual(make_app.APP, Path.home() / 'DevOps/Dev/.state/WindowOrganizer/WindowOrganizer.app')
 
