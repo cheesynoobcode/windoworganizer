@@ -130,7 +130,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     /// The line under the buttons: saved, or why not.
     let result = NSTextField(labelWithString: "")
     /// "Try these again" (GPT-WO-S6): shown only beside the line that listed the windows that did not move, on the desktop it was made on.
-    let retryButton = NSButton(title: "Try these again", target: nil, action: nil)
+    let retryButton = NSButton(title: Words.raw("partial.retry"), target: nil, action: nil)
     private(set) var retryFailures: [FailedMove] = []
     private var retryContext: WorkspaceContext?
     private var retryLine = ""
@@ -424,10 +424,10 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             previewMode.selectItem(at: 0)
             liveWindows = report.windows.filter { $0.screenUUID == selection.screenUUID }
             previewContext = context; lastPreviewTime = Date()
-            previewMessage = listing.warnings.isEmpty ? (liveWindows.isEmpty ? "No standard windows are visible on this screen." : "") : "Some windows unavailable: " + listing.warnings.joined(separator: " ")
+            previewMessage = listing.warnings.isEmpty ? (liveWindows.isEmpty ? Words.raw("read.noWindows") : "") : Words.text("read.someUnavailable", listing.warnings.joined(separator: " "))
             refreshWorkspaceStatus()
-            result.stringValue = "Refreshed · \(liveWindows.count) windows · Live positions reloaded."
-        } failed: { [self] message in result.stringValue = "Refresh unavailable: \(message)" }
+            result.stringValue = Words.text("read.refreshed", liveWindows.count)
+        } failed: { [self] message in result.stringValue = Words.text("read.unavailable", message) }
     }
     func refreshCurrentWindowsSync() {
         do {
@@ -436,10 +436,10 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             previewMode.selectItem(at: 0)
             liveWindows = report.windows.filter { $0.screenUUID == selection.screenUUID }
             previewContext = context; lastPreviewTime = Date()
-            previewMessage = listing.warnings.isEmpty ? (liveWindows.isEmpty ? "No standard windows are visible on this screen." : "") : "Some windows unavailable: " + listing.warnings.joined(separator: " ")
+            previewMessage = listing.warnings.isEmpty ? (liveWindows.isEmpty ? Words.raw("read.noWindows") : "") : Words.text("read.someUnavailable", listing.warnings.joined(separator: " "))
             refreshWorkspaceStatus()
-            result.stringValue = "Refreshed · \(liveWindows.count) windows · Live positions reloaded."
-        } catch { result.stringValue = "Refresh unavailable: \(error)" }
+            result.stringValue = Words.text("read.refreshed", liveWindows.count)
+        } catch { result.stringValue = Words.text("read.unavailable", "\(error)") }
     }
     /// The editor's read off the main thread: "Reading windows…" shows at once, one read runs at a time, and a listing from
     /// a read that crossed a desktop or screen change is dropped with desktopChangedText.
@@ -455,7 +455,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             case .contextChanged: failed(desktopChangedText)
             case .listing(let read, let after):
                 var report = read.report
-                guard report.trusted else { failed("Enable window access in Accessibility settings first."); return }
+                guard report.trusted else { failed(Words.raw("read.noAccess")); return }
                 guard allowPartial || read.listing.warnings.isEmpty else { failed(read.listing.warnings.joined(separator: " ")); return }
                 report.desktop = SkyLight.desktop(screens: after.workspace.screens)
                 if result.stringValue == readingWindowsText { result.stringValue = "" }
@@ -491,7 +491,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             let applied = applyProvider(Plan(moves: moves, skipped: [], unchanged: draft.count - moves.count), listing, context)
             guard applied.cancelled == 0 else { throw WorkspaceActionError(message: "The desktop changed while moving. Your preview is still here; try again.") }
             guard applied.failed == 0 else {
-                result.stringValue = "Not saved: Some windows could not be moved\(notMovedSuffix(applied, report.windows)). Your preview is still here; try again."
+                result.stringValue = Words.text("partial.notSaved", Words.text("partial.notSaved.moved", notMovedSuffix(applied, report.windows)))
                 offerRetry(applied, context: context); return
             }
             let (_, after, _, afterContext) = try workspaceSnapshot()
@@ -625,7 +625,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             guard before.screens == self.screens else { throw WorkspaceError.screenDisconnected }
             guard selection.isVisible(desktops: before.desktops) else { throw WorkspaceError.desktopNotVisible }
         }, after: { report, listing in
-            guard report.trusted else { throw WorkspaceActionError(message: "Enable window access in Accessibility settings first.") }
+            guard report.trusted else { throw WorkspaceActionError(message: Words.raw("read.noAccess")) }
             guard allowPartial || listing.warnings.isEmpty else { throw WorkspaceActionError(message: listing.warnings.joined(separator: " ")) }
         })
         return (selection, report, listing, before)
@@ -641,7 +641,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         readLive(allowPartial: true) { [self] _, report, listing, context in
             liveWindows = report.windows.filter { $0.screenUUID == screen?.uuid }
             previewContext = context
-            previewMessage = listing.warnings.isEmpty ? (liveWindows.isEmpty ? "No standard windows are visible on this screen." : "") : "Some windows unavailable: " + listing.warnings.joined(separator: " ")
+            previewMessage = listing.warnings.isEmpty ? (liveWindows.isEmpty ? Words.raw("read.noWindows") : "") : Words.text("read.someUnavailable", listing.warnings.joined(separator: " "))
             refreshWorkspaceStatus()
         } failed: { [self] message in
             if message != desktopChangedText { liveWindows = []; previewContext = nil }
@@ -655,7 +655,7 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             let (_, report, listing, context) = try workspaceSnapshot(allowPartial: true)
             liveWindows = report.windows.filter { $0.screenUUID == screen?.uuid }
             previewContext = context
-            previewMessage = listing.warnings.isEmpty ? (liveWindows.isEmpty ? "No standard windows are visible on this screen." : "") : "Some windows unavailable: " + listing.warnings.joined(separator: " ")
+            previewMessage = listing.warnings.isEmpty ? (liveWindows.isEmpty ? Words.raw("read.noWindows") : "") : Words.text("read.someUnavailable", listing.warnings.joined(separator: " "))
         } catch { liveWindows = []; previewContext = nil; previewMessage = String(describing: error) }
         refreshWorkspaceStatus()
     }
@@ -730,14 +730,14 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             let applied = applyProvider(plan, listing, context)
             mode.selectItem(at: 2); capturedDraft = true; refresh(); refreshLivePreview()
             result.stringValue = ResultLine.restored(applied, shifted: shiftedApps(applied, in: report.windows),
-                                                     failedList: ResultLine.notMoved(applied.failures, in: report.windows), desktop: desktopNumber, at: clock()) + ". Save to keep this screen's automatic grid."
+                                                     failedList: ResultLine.notMoved(applied.failures, in: report.windows), desktop: desktopNumber, at: clock()) + Words.raw("partial.saveGrid")
             offerRetry(applied, context: context)
         } catch { result.stringValue = "Not arranged: \(error)" }
     }
 
     private func notMovedSuffix(_ r: ApplyResult, _ windows: [WindowInfo]) -> String {
         let list = ResultLine.notMoved(r.failures, in: windows)
-        return list.isEmpty ? "" : ": \(list)"
+        return list.isEmpty ? "" : Words.text("partial.list", list)
     }
     /// Remembers what did not move and shows the button for it; the line is the one set right after this call.
     private func offerRetry(_ r: ApplyResult, context: WorkspaceContext) {
@@ -762,11 +762,11 @@ final class LayoutsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             }
             var applied = moves.isEmpty ? ApplyResult(placed: 0, keptMinimum: 0, failed: 0, unchanged: 0, notOpen: 0) : applyProvider(Plan(moves: moves, skipped: [], unchanged: 0), listing, context)
             applied.failed += gone.count; applied.failures += gone
-            result.stringValue = "Tried again: " + ResultLine.restored(applied, shifted: shiftedApps(applied, in: report.windows),
-                                                  failedList: ResultLine.notMoved(applied.failures, in: report.windows), desktop: desktopNumber, at: clock())
+            result.stringValue = Words.text("partial.triedAgain", ResultLine.restored(applied, shifted: shiftedApps(applied, in: report.windows),
+                                                  failedList: ResultLine.notMoved(applied.failures, in: report.windows), desktop: desktopNumber, at: clock()))
             offerRetry(applied, context: context)
             refreshLivePreview()
-        } catch { result.stringValue = "Not tried again: \(error)"; retryLine = result.stringValue }
+        } catch { result.stringValue = Words.text("partial.notTriedAgain", "\(error)"); retryLine = result.stringValue }
     }
 
     @objc func restoreCurrent() {
@@ -1163,7 +1163,7 @@ final class TopStackView: NSStackView { override var isFlipped: Bool { true } }
 @MainActor
 final class TopDocumentView: NSView { override var isFlipped: Bool { true } }
 
-let readingWindowsText = "Reading windows…"
+let readingWindowsText = Words.raw("read.reading")
 
 /// What a live read must see unchanged from start to finish: screens, desktops and the selected screen.
 struct LiveReadContext: Equatable, Sendable { var workspace: WorkspaceContext; var screenUUID: String? }
