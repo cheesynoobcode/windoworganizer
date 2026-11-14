@@ -157,7 +157,7 @@ public extension WindowMover {
 }
 
 /// Why a window did not move (GPT-WO-S6): the app did not answer, kept or refused the size, or the window is gone.
-public enum FailReason: String, Equatable, Sendable { case notAnswering, refusedSize, gone }
+public enum FailReason: String, CaseIterable, Equatable, Sendable { case notAnswering, refusedSize, gone }
 
 /// A move that did not succeed, kept whole so one retry can run it again through the same guarded path.
 public struct FailedMove: Equatable, Sendable {
@@ -245,58 +245,54 @@ public func shiftedApps(_ r: ApplyResult, in windows: [WindowInfo]) -> [String] 
 /// The menu's last-result line (plan §4): what happened, on which desktop, when.
 public enum ResultLine {
     public static func restored(_ r: ApplyResult, starting: [String] = [], shifted: [String] = [], failedList: String = "", desktop: Int?, at time: String) -> String {
-        if r.cancelled > 0 { return "Stopped: the desktop changed. Placed \(r.placed + r.keptMinimum), \(r.cancelled) left as they were · \(time)" }
+        if r.cancelled > 0 { return Words.text("restore.stopped", r.placed + r.keptMinimum, r.cancelled, time) }
         let inPlace = r.placed + r.unchanged
         var parts: [String] = []
         if inPlace == 0 && r.keptMinimum == 0 && r.failed == 0 {
-            parts.append(r.notOpen == 0 ? "nothing to place"
-                         : "none of the \(r.notOpen) remembered \(r.notOpen == 1 ? "window is" : "windows is") open")
+            parts.append(r.notOpen == 0 ? Words.raw("restore.nothing") : Words.text(r.notOpen == 1 ? "restore.noneOpen.one" : "restore.noneOpen.other", r.notOpen))
         } else {
-            parts.append("\(plural(inPlace, "window")) placed")
+            parts.append(Words.text("restore.placed", Words.count("canvas.windows", inPlace)))
             let moved = min(r.shiftedIDs.count, r.keptMinimum), plain = r.keptMinimum - moved
-            if plain > 0 { parts.append("\(plain) kept \(plain == 1 ? "its" : "their") minimum size") }
+            if plain > 0 { parts.append(Words.text(plain == 1 ? "restore.minimum.one" : "restore.minimum.other", plain)) }
             if moved > 0 {
-                let names = shifted.isEmpty ? "" : ": \(shifted.joined(separator: ", "))"
-                parts.append("\(moved) kept \(moved == 1 ? "its minimum size and was" : "their minimum size and were") moved inside the screen\(names)")
+                let names = shifted.isEmpty ? "" : Words.text("restore.moved.names", shifted.joined(separator: ", "))
+                parts.append(Words.text(moved == 1 ? "restore.moved.one" : "restore.moved.other", moved, names))
             }
-            if r.failed > 0 { parts.append("\(r.failed) could not be moved" + (failedList.isEmpty ? "" : " (\(failedList))")) }
-            if r.notOpen > 0 { parts.append("\(r.notOpen) not open") }
+            if r.failed > 0 { parts.append(Words.text("restore.failed", r.failed) + (failedList.isEmpty ? "" : Words.text("restore.failed.list", failedList))) }
+            if r.notOpen > 0 { parts.append(Words.text("restore.notOpen", r.notOpen)) }
         }
-        if !starting.isEmpty { parts.append("starting \(starting.joined(separator: ", "))") }
-        return "\(name(desktop)): \(parts.joined(separator: ", ")) · \(time)"
+        if !starting.isEmpty { parts.append(Words.text("restore.starting", starting.joined(separator: ", "))) }
+        return Words.text("restore.line", name(desktop), parts.joined(separator: ", "), time)
     }
 
     /// The windows that did not move, `app "title" (reason)`, at most five, then "and n more"; empty when none failed.
     public static func notMoved(_ failures: [FailedMove], in windows: [WindowInfo], limit: Int = 5) -> String {
         let shown = failures.prefix(limit).map { f -> String in
             let w = windows.first { $0.windowID == f.windowID }
-            let app = w.map { $0.appName ?? $0.bundleID } ?? "a window"
-            let title = (w?.title).flatMap { $0.isEmpty ? nil : " \"\($0)\"" } ?? ""
-            return "\(app)\(title) (\(reasonText(f.reason)))"
+            let app = w.map { $0.appName ?? $0.bundleID } ?? Words.raw("restore.aWindow")
+            let title = (w?.title).flatMap { $0.isEmpty ? nil : Words.text("restore.title", $0) } ?? ""
+            return Words.text("restore.entry", app, title, reasonText(f.reason))
         }
         guard !shown.isEmpty else { return "" }
         let more = failures.count - shown.count
-        return shown.joined(separator: ", ") + (more > 0 ? ", and \(more) more" : "")
+        return shown.joined(separator: ", ") + (more > 0 ? Words.text("restore.more", more) : "")
     }
     /// The one place the reason classes get their words.
     public static func reasonText(_ r: FailReason) -> String {
-        switch r {
-        case .notAnswering: return "not answering"
-        case .refusedSize: return "refused the size"
-        case .gone: return "gone"
-        }
+        let key = "restore.reason." + r.rawValue
+        return Words.raw(key)
     }
 
     /// After a group was applied (WO-GROUPS-G3): what moved now, and the desktops that follow on their next visit.
     public static func group(_ name: String, _ r: ApplyResult?, later: [Int], desktop: Int?, at time: String) -> String {
         var parts: [String] = []
         if let r {
-            if r.cancelled > 0 { return "Stopped: the desktop changed. Group \(name): \(r.placed + r.keptMinimum) placed, \(r.cancelled) left as they were · \(time)" }
-            parts.append("\(plural(r.placed + r.unchanged + r.keptMinimum, "window")) placed")
-            if r.failed > 0 { parts.append("\(r.failed) could not be moved") }
-        } else { parts.append("not on this desktop") }
-        if !later.isEmpty { parts.append("Desktop\(later.count == 1 ? "" : "s") \(later.map(String.init).joined(separator: ", ")) on next visit") }
-        return "\(self.name(desktop)): Group \(name): \(parts.joined(separator: " · ")) · \(time)"
+            if r.cancelled > 0 { return Words.text("group.stopped", name, r.placed + r.keptMinimum, r.cancelled, time) }
+            parts.append(Words.text("restore.placed", Words.count("canvas.windows", r.placed + r.unchanged + r.keptMinimum)))
+            if r.failed > 0 { parts.append(Words.text("restore.failed", r.failed)) }
+        } else { parts.append(Words.raw("group.notHere")) }
+        if !later.isEmpty { parts.append(Words.text(later.count == 1 ? "group.later.one" : "group.later.other", later.map(String.init).joined(separator: ", "))) }
+        return Words.text("group.line", self.name(desktop), name, parts.joined(separator: " · "), time)
     }
 
     /// The final line of a start-missing-apps batch (WO-LAUNCH-MISSING).
@@ -335,7 +331,7 @@ public enum ResultLine {
     private static func list(_ names: [String]) -> String {
         names.count < 2 ? names.joined() : names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
     }
-    private static func name(_ desktop: Int?) -> String { desktop.map { "Desktop \($0)" } ?? "Desktop unknown" }
+    private static func name(_ desktop: Int?) -> String { desktop.map { Words.text("desktop.number", $0) } ?? Words.raw("desktop.unknown") }
     private static func plural(_ n: Int, _ word: String) -> String { "\(n) \(word)\(n == 1 ? "" : "s")" }
 }
 

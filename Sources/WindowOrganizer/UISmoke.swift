@@ -137,17 +137,20 @@ func runUISmoke() -> Int32 {
             slow.pick()
             func pumpSmoke(_ done: () -> Bool) { let end = Date().addingTimeInterval(5); while !done() && Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) } }
             @MainActor func shot(_ name: String) throws {
-                slow.window.contentView?.layoutSubtreeIfNeeded()
-                guard let content = slow.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { throw CocoaError(.fileWriteUnknown) }
-                content.cacheDisplay(in: content.bounds, to: bitmap)
-                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent(name + ".png"))
+                for (suffix, look) in [("", NSAppearance.Name.aqua), ("-dark", .darkAqua)] {
+                    slow.window.appearance = NSAppearance(named: look)
+                    slow.window.contentView?.layoutSubtreeIfNeeded()
+                    guard let content = slow.window.contentView else { throw CocoaError(.fileWriteUnknown) }
+                    try writeBackedShot(content, look: look, to: URL(fileURLWithPath: state).appendingPathComponent(name + suffix + ".png"))
+                }
+                slow.window.appearance = nil
             }
             slow.windowReader = ReadCoordinator(context: { LiveReadContext(workspace: slow.contextProvider(), screenUUID: screen.uuid) }, read: { _ in
                 counter.reads += 1; usleep(400_000)
                 return LiveRead(report: ListReport(trusted: true, desktop: nil, screens: [screen], windows: [w]), listing: Listing())
             })
             slow.refreshCurrentWindows(); slow.refreshCurrentWindows()
-            let reading = slow.isReadingWindows && slow.result.stringValue == readingWindowsText
+            let reading = slow.isReadingWindows && slow.result.stringValue == Words.raw("read.reading")
             try shot("reading-windows-1-reading")
             pumpSmoke { !slow.isReadingWindows }
             let done = counter.reads == 1 && slow.result.stringValue.hasPrefix("Refreshed · 1 windows") && slow.liveWindows.count == 1
@@ -182,10 +185,13 @@ func runUISmoke() -> Int32 {
             partial.screenPopUp.addItem(withTitle: screen.name); partial.desktopPopUp.addItems(withTitles: ["Desktop 1", "Desktop 2"])
             partial.pick()
             @MainActor func shot(_ name: String) throws {
-                partial.window.contentView?.layoutSubtreeIfNeeded()
-                guard let content = partial.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { throw CocoaError(.fileWriteUnknown) }
-                content.cacheDisplay(in: content.bounds, to: bitmap)
-                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent(name + ".png"))
+                for (suffix, look) in [("", NSAppearance.Name.aqua), ("-dark", .darkAqua)] {
+                    partial.window.appearance = NSAppearance(named: look)
+                    partial.window.contentView?.layoutSubtreeIfNeeded()
+                    guard let content = partial.window.contentView else { throw CocoaError(.fileWriteUnknown) }
+                    try writeBackedShot(content, look: look, to: URL(fileURLWithPath: state).appendingPathComponent(name + suffix + ".png"))
+                }
+                partial.window.appearance = nil
             }
             partial.restoreCurrent()
             let line = partial.result.stringValue
@@ -1406,4 +1412,25 @@ func runUISmoke() -> Int32 {
     } catch { print("FAIL UI setup: \(error)"); failed += 1 }
     print("UI: \(passed) passed / \(failed) failed")
     return failed == 0 ? 0 : 1
+}
+
+/// A view drawn with the given look over the window background of that look, written as a PNG (offscreen views have no background of their own).
+@MainActor func writeBackedShot(_ view: NSView, look: NSAppearance.Name, to url: URL) throws {
+    final class Backed: NSView { override func draw(_ r: NSRect) { NSColor.windowBackgroundColor.setFill(); bounds.fill() } }
+    let appearance = NSAppearance(named: look), before = view.appearance
+    view.appearance = appearance; defer { view.appearance = before }
+    view.layoutSubtreeIfNeeded()
+    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw CocoaError(.fileWriteUnknown) }
+    view.cacheDisplay(in: view.bounds, to: bitmap)
+    let back = Backed(frame: view.bounds); back.appearance = appearance
+    guard let under = back.bitmapImageRepForCachingDisplay(in: back.bounds) else { throw CocoaError(.fileWriteUnknown) }
+    back.cacheDisplay(in: back.bounds, to: under)
+    guard let flat = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: under.pixelsWide, pixelsHigh: under.pixelsHigh, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+          let ctx = NSGraphicsContext(bitmapImageRep: flat) else { throw CocoaError(.fileWriteUnknown) }
+    NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = ctx
+    let whole = NSRect(x: 0, y: 0, width: under.pixelsWide, height: under.pixelsHigh)
+    under.draw(in: whole); bitmap.draw(in: whole, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
+    NSGraphicsContext.restoreGraphicsState()
+    guard let png = flat.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+    try png.write(to: url)
 }
