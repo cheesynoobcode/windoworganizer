@@ -1,0 +1,16 @@
+{
+  "words": {
+    "card.label": "%@ — %@",
+    "card.value": "%d, %d, %d × %d on screen %d",
+    "canvas.noScreen": "no screen",
+    "canvas.windows.one": "1 window",
+    "canvas.windows.other": "%d windows",
+    "canvas.label": "Screen canvas: %@. %@. %@",
+    "canvas.help.editable": "Drag windows to move, drag bottom-right corners to resize. Arrow keys move; Shift or Option with an arrow resizes. Tab goes to the next window."
+  },
+  "numbers": {
+    "card.step": 4,
+    "card.minimumWidth": 180,
+    "card.minimumHeight": 120
+  }
+}

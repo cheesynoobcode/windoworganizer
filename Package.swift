@@ -7,7 +7,7 @@ let package = Package(
     name: "WindowOrganizer",
     platforms: [.macOS(.v14)],
     targets: [
-        .target(name: "WindowOrganizerCore"),
+        .target(name: "WindowOrganizerCore", resources: [.copy("words.json")]),
         .executableTarget(name: "WindowOrganizer", dependencies: ["WindowOrganizerCore"]),
         .executableTarget(name: "WOChecks", dependencies: ["WindowOrganizerCore"]),
     ]

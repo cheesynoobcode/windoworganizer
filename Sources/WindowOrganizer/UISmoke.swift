@@ -287,6 +287,71 @@ func runUISmoke() -> Int32 {
             let resized = view.transformed(w.frame, delta: CGPoint(x: -10000, y: -10000), resize: true)
             return moved.x + moved.width <= screen.visibleFrame.x + screen.visibleFrame.width && moved.y == screen.visibleFrame.y && resized.width == 180 && resized.height == 120
         })
+        func cardKey(_ code: UInt16, _ flags: NSEvent.ModifierFlags = []) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code)!
+        }
+        @MainActor func cardCanvas(editable: Bool) -> ScreenPreview {
+            let view = ScreenPreview(frame: NSRect(x: 0, y: 0, width: 600, height: 300)); view.screen = screen; view.editable = editable
+            view.windows = [
+                PreviewWindow(frame: Frame(x: 100, y: 100, width: 400, height: 300), title: "Build", bundleID: "a", windowID: 1, app: "Xcode", detail: "Build"),
+                PreviewWindow(frame: Frame(x: 600, y: 200, width: 300, height: 250), title: "Notes", bundleID: "b", windowID: 2, app: "Notes", detail: "Todo"),
+                PreviewWindow(frame: Frame(x: 50, y: 400, width: 500, height: 200), title: "Mail", bundleID: "c", windowID: 3, app: "Mail", detail: "Inbox")]
+            view.updateAccessibility(); return view
+        }
+        @MainActor func children(_ view: ScreenPreview) -> [NSAccessibilityElement] { (view.accessibilityChildren() ?? []).compactMap { $0 as? NSAccessibilityElement } }
+        check("canvas stays a group with one labelled child per card; a move updates the child's value", {
+            let view = cardCanvas(editable: true)
+            var kids = children(view)
+            let first = kids.map { $0.accessibilityLabel() ?? "" } == [CardText.label(app: "Xcode", title: "Build"), CardText.label(app: "Notes", title: "Todo"), CardText.label(app: "Mail", title: "Inbox")]
+            // the value is the window's real screen points on a scaled canvas, never canvas points
+            let real = kids[0].accessibilityValue() as? String == CardText.value(Frame(x: 100, y: 100, width: 400, height: 300), screenNumber: 1)
+            view.selectedID = 1
+            view.changed = { id, frame in if let i = view.windows.firstIndex(where: { $0.windowID == id }) { view.windows[i].frame = frame } }
+            view.keyDown(with: cardKey(124)); view.updateAccessibility(); kids = children(view)
+            let moved = kids[0].accessibilityValue() as? String == CardText.value(Frame(x: 100 + CardSettings.step, y: 100, width: 400, height: 300), screenNumber: 1)
+            let frameUpdated = kids[0].accessibilityFrameInParentSpace() == view.previewRect(view.windows[0].frame)
+            let list = kids.map { "\($0.accessibilityRole()?.rawValue ?? "?") | \($0.accessibilityLabel() ?? "") | \($0.accessibilityValue() as? String ?? "") | selected \($0.isAccessibilitySelected())" }.joined(separator: "\n")
+            try list.write(to: URL(fileURLWithPath: state).appendingPathComponent("canvas-children.txt"), atomically: true, encoding: .utf8)
+            return first && real && moved && frameUpdated && kids.count == 3 && view.accessibilityRole() == .group && kids.allSatisfy { $0.accessibilityRole() == .button }
+        })
+        check("pressing a card by VoiceOver selects it and keys then act on it", {
+            let view = cardCanvas(editable: true)
+            view.changed = { id, frame in if let i = view.windows.firstIndex(where: { $0.windowID == id }) { view.windows[i].frame = frame } }
+            guard let second = children(view).dropFirst().first, second.accessibilityPerformPress() else { return false }
+            let before = view.windows[1].frame
+            view.keyDown(with: cardKey(125))
+            return view.selectedID == 2 && view.windows[1].frame.y == before.y + CardSettings.step && view.windows[0].frame.y == 100
+        })
+        check("Shift-Tab on the first card and Tab on the last leave the canvas", {
+            let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 300), styleMask: [.titled], backing: .buffered, defer: true)
+            let view = cardCanvas(editable: true); host.contentView?.addSubview(view)
+            view.selectedID = 1; view.keyDown(with: cardKey(48, .shift)); let backLeft = view.selectedID == nil
+            view.selectedID = 3; view.keyDown(with: cardKey(48)); let forwardLeft = view.selectedID == nil
+            view.selectedID = 1; view.keyDown(with: cardKey(48)); let inside = view.selectedID == 2
+            return backLeft && forwardLeft && inside
+        })
+        check("the read-only canvas lists its cards but takes no keys", {
+            let view = cardCanvas(editable: false); var calls = 0
+            view.changed = { _, _ in calls += 1 }
+            view.selectedID = 1; view.keyDown(with: cardKey(124)); view.keyDown(with: cardKey(48))
+            return children(view).count == 3 && calls == 0 && view.selectedID == 1 && !view.acceptsFirstResponder
+        })
+        check("shots: a card selected, after a move, after a resize (light, dark)", {
+            for mode in ["light", "dark"] {
+                let view = cardCanvas(editable: true); view.appearance = NSAppearance(named: mode == "dark" ? .darkAqua : .aqua)
+                view.changed = { id, frame in if let i = view.windows.firstIndex(where: { $0.windowID == id }) { view.windows[i].frame = frame } }
+                @MainActor func snap(_ name: String) throws {
+                    view.updateAccessibility()
+                    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw CocoaError(.fileWriteUnknown) }
+                    view.cacheDisplay(in: view.bounds, to: bitmap)
+                    try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent("card-\(name)-\(mode).png"))
+                }
+                view.selectedID = 1; try snap("selected")
+                for _ in 0..<5 { view.keyDown(with: cardKey(124)) }; try snap("moved")
+                for _ in 0..<5 { view.keyDown(with: cardKey(124, .shift)) }; try snap("resized")
+            }
+            return true
+        })
         check("dragging stages a draft without moving or saving real windows", {
             visibleDesktop = 2; editor.accessProvider = { true }; editor.pick(); editor.previewMode.selectItem(at: 0); editor.refreshLivePreview()
             let before = try Data(contentsOf: layoutStore().file); moved = []

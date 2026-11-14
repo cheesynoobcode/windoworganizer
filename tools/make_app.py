@@ -63,6 +63,13 @@ def bundle(binary, app, version):
         resources = Path(app) / 'Contents' / 'Resources'
         resources.mkdir(parents=True, exist_ok=True)
         shutil.copy2(icon, resources / icon.name)
+    # SwiftPM resource bundles (words.json) sit beside the binary and are found under Contents/Resources.
+    for found in sorted(Path(binary).parent.glob('*.bundle')):
+        target = Path(app) / 'Contents' / 'Resources' / found.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(found, target)
 
 
 def main():
