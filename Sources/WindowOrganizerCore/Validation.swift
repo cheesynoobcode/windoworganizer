@@ -36,9 +36,38 @@ extension Layouts {
     }
 }
 
-/// A compact grid for all windows of a screen, with shared rounded edges and no empty cells in the last row.
+/// Grid's wide-screen rule applies on screens wider than this width/height ratio.
+/// Tom 5 Oct 09:3x (decisions-open.md): "on screens wider than 2:1 Grid keeps today's wide-screen rule".
+public let gridWideRatio = 2.0
+
+/// A compact grid for all windows of a screen, with shared rounded edges and no empty cells.
+/// Tom 5 Oct 09:3x: windows are spread evenly over the rows, row lengths differ by at most one, longer rows on top
+/// (7 → 3+2+2, 8 → 3+3+2, 10 → 4+3+3); rows = ceil(n / ceil(sqrt n)). A portrait area turns this 90°: columns, filled
+/// left to right, longer columns first. Wider than gridWideRatio keeps the wide-screen rule (columns by aspect ratio).
 public func gridTile(_ n: Int, in area: Frame) -> [Frame] {
     guard n > 0, area.isValid else { return [] }
+    if area.width / area.height > gridWideRatio { return wideGridTile(n, in: area) }
+    let lines = Int(ceil(Double(n) / ceil(sqrt(Double(n)))))
+    let portrait = area.height > area.width
+    var frames: [Frame] = []
+    for line in 0..<lines {
+        let count = n / lines + (line < n % lines ? 1 : 0)
+        // across = the line's own axis split `count` ways; along = the lines' axis split `lines` ways.
+        let (along0, alongSize, across0, acrossSize) = portrait
+            ? (area.x, area.width, area.y, area.height) : (area.y, area.height, area.x, area.width)
+        let a0 = (along0 + Double(line) * alongSize / Double(lines)).rounded()
+        let a1 = (along0 + Double(line + 1) * alongSize / Double(lines)).rounded()
+        for cell in 0..<count {
+            let c0 = (across0 + Double(cell) * acrossSize / Double(count)).rounded()
+            let c1 = (across0 + Double(cell + 1) * acrossSize / Double(count)).rounded()
+            frames.append(portrait ? Frame(x: a0, y: c0, width: a1 - a0, height: c1 - c0) : Frame(x: c0, y: a0, width: c1 - c0, height: a1 - a0))
+        }
+    }
+    return frames
+}
+
+/// The wide-screen rule (main before WO-GRID-BALANCED): columns by aspect ratio, the last row spread over the full width.
+private func wideGridTile(_ n: Int, in area: Frame) -> [Frame] {
     let columns = min(n, max(1, Int(ceil(sqrt(Double(n) * area.width / area.height)))))
     let rows = Int(ceil(Double(n) / Double(columns)))
     var frames: [Frame] = []

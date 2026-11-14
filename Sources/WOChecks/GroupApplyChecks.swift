@@ -137,7 +137,8 @@ let groupApplyChecks: [(String, @Sendable () throws -> Void)] = [
         guard let plan = arrange(l, s, now) else { throw CheckFailure(description: "no plan") }
         try expectEqual(plan.tiles, [[1, 2, 3]])
         try expectEqual(onlyWindow(plan, 3).moves.map(\.windowID), [1, 2, 3])
-        try expectEqual(target(onlyWindow(plan, 3), 3), tile(3, in: laptop.visibleFrame)[2])
+        // WO-GRID-BALANCED: 3 on the built-in display is 2+1 now, so the new window takes the bottom row (was the third column)
+        try expectEqual(target(onlyWindow(plan, 3), 3), gridTile(3, in: laptop.visibleFrame)[2])
     }),
     ("group new window 2: a saved group gives the new window a free position, with none free it stays where it is", {
         let pos = [GroupPosition(matcher: Matcher(bundleID: term, order: 0), fraction: UnitRect(x: 0, y: 0, width: 0.5, height: 1)),
