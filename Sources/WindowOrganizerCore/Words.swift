@@ -16,4 +16,6 @@ public enum Words {
     public static func has(_ key: String) -> Bool { file.words[key] != nil || file.numbers[key] != nil }
     public static func text(_ key: String, _ arguments: CVarArg...) -> String { String(format: raw(key), arguments: arguments) }
     public static func number(_ key: String) -> Double { file.numbers[key] ?? 0 }
+    /// "1 window" / "3 windows": picks base.one or base.other, so every counted noun is worded in the file.
+    public static func count(_ base: String, _ n: Int) -> String { n == 1 ? raw(base + ".one") : text(base + ".other", n) }
 }
