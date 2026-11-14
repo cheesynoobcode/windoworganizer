@@ -219,25 +219,47 @@ func runUISmoke() -> Int32 {
             var asked: [String] = []
             other.confirmUseHere = { asked.append($0); return true }
             other.pick()
-            @MainActor func shot(_ name: String) throws {
-                other.window.contentView?.layoutSubtreeIfNeeded()
-                guard let content = other.window.contentView, let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { throw CocoaError(.fileWriteUnknown) }
-                content.cacheDisplay(in: content.bounds, to: bitmap)
-                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: state).appendingPathComponent(name + ".png"))
+            @MainActor func shot(_ view: NSView, _ name: String, fit: Bool = true) throws {
+                for (mode, look) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                    view.appearance = NSAppearance(named: look)
+                    view.layoutSubtreeIfNeeded()
+                    if fit { view.setFrameSize(NSSize(width: max(view.fittingSize.width + 16, 460), height: view.fittingSize.height)) }
+                    view.layoutSubtreeIfNeeded()
+                    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw CocoaError(.fileWriteUnknown) }
+                    view.cacheDisplay(in: view.bounds, to: bitmap)
+                    // the view has no background of its own: a bare backed view of the same size and look is rendered first and the view drawn over it
+                    final class Backed: NSView { override func draw(_ r: NSRect) { NSColor.windowBackgroundColor.setFill(); bounds.fill() } }
+                    let back = Backed(frame: view.bounds); back.appearance = view.appearance
+                    guard let under = back.bitmapImageRepForCachingDisplay(in: back.bounds) else { throw CocoaError(.fileWriteUnknown) }
+                    back.cacheDisplay(in: back.bounds, to: under)
+                    guard let flat = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: under.pixelsWide, pixelsHigh: under.pixelsHigh, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0), let ctx = NSGraphicsContext(bitmapImageRep: flat) else { throw CocoaError(.fileWriteUnknown) }
+                    NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = ctx
+                    let whole = NSRect(x: 0, y: 0, width: under.pixelsWide, height: under.pixelsHigh)
+                    under.draw(in: whole); bitmap.draw(in: whole, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
+                    NSGraphicsContext.restoreGraphicsState()
+                    guard let png = flat.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+                    try png.write(to: URL(fileURLWithPath: state).appendingPathComponent("\(name)-\(mode).png"))
+                }
             }
-            let listed = other.otherEntries.count == 1 && other.otherSetupsList.arrangedSubviews.count == 2
+            let buttons = { other.otherSetupsList.arrangedSubviews.compactMap { ($0 as? NSStackView)?.arrangedSubviews.last as? NSButton } }
+            let listed = other.otherEntries.count == 1 && other.otherSetupsList.arrangedSubviews.count == 2 && other.otherTakenLine == nil && buttons()[0].isEnabled
             let words = other.otherEntries.first.map { OtherSetupLine.text($0, screens: [screen]) } ?? ""
-            let worded = words == "2 screens, desktop 3 · a screen not connected + \(screen.name) · 1 window"  // the setup key sorts the UUIDs
-            try shot("other-setups-1-listed")
-            other.useHerePressed(other.otherSetupsList.arrangedSubviews.compactMap { ($0 as? NSStackView)?.arrangedSubviews.last as? NSButton }[0])
-            let copied = other.result.stringValue.hasPrefix("Copied to ") && asked.count == 1 && asked[0].hasPrefix("Copy this layout to ")
+            let worded = words == "2 screens, desktop 3 · \(screen.name) + a screen not connected · layout for \(screen.name) · 1 window"
+            try shot(other.otherSetupsList, "other-setups-1-listed")
+            let alert = LayoutsWindow.useHereAlert(Words.text("other.confirm.question", screen.name, "Desktop 1"))
+            alert.layout()
+            let dialog = alert.window.contentView
+            if let dialog { try shot(dialog, "other-setups-2-confirm", fit: false) }
+            other.useHerePressed(buttons()[0])
+            let copied = other.result.stringValue == Words.text("other.copied", screen.name, "Desktop 1") && asked.count == 1 && asked[0] == Words.text("other.confirm.question", screen.name, "Desktop 1")
             let stored = try layoutStore().load()
             let here = stored.arrangement(setup: ScreenSetup(screens: [screen]), desktop: 1, screen: screen.uuid) != nil
             let kept = stored.setups[twoScreens.key] == (try JSONDecoder().decode(Layouts.self, from: original)).setups[twoScreens.key]
-            try shot("other-setups-2-copied")
-            let nowTaken = other.otherSetupsList.arrangedSubviews.compactMap { ($0 as? NSStackView)?.arrangedSubviews.last as? NSButton }.allSatisfy { !$0.isEnabled }
-            guard listed && worded && copied && here && kept && nowTaken else {
-                throw NSError(domain: "other", code: 1, userInfo: [NSLocalizedDescriptionKey: "listed \(listed) worded \(worded) [\(words)] copied \(copied) [\(other.result.stringValue)] here \(here) kept \(kept) nowTaken \(nowTaken)"])
+            try shot(other.result, "other-setups-3-result")
+            let nowTaken = buttons().allSatisfy { !$0.isEnabled } && other.otherTakenLine?.stringValue == Words.text("other.taken.line", screen.name, "Desktop 1")
+            if let line = other.otherTakenLine { _ = line; try shot(other.otherSetupsList, "other-setups-4-taken") }
+            guard listed && worded && dialog != nil && copied && here && kept && nowTaken else {
+                throw NSError(domain: "other", code: 1, userInfo: [NSLocalizedDescriptionKey: "listed \(listed) worded \(worded) [\(words)] dialog \(dialog != nil) copied \(copied) [\(other.result.stringValue)] here \(here) kept \(kept) nowTaken \(nowTaken)"])
             }
             return true
         })

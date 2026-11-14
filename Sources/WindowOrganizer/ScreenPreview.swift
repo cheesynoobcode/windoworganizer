@@ -109,7 +109,7 @@ final class ScreenPreview: NSView {
     override func accessibilityChildren() -> [Any]? { cardElements }
     func updateAccessibility() {
         setAccessibilityElement(true); setAccessibilityRole(.group)
-        let count = windows.count == 1 ? Words.raw("canvas.windows.one") : Words.text("canvas.windows.other", windows.count)
+        let count = Words.count("canvas.windows", windows.count)
         setAccessibilityLabel(Words.text("canvas.label", screen?.name ?? Words.raw("canvas.noScreen"), count, editable ? Words.raw("canvas.help.editable") : message))
         cardElements = windows.map { item in
             let element = CardElement()
