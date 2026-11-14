@@ -120,6 +120,21 @@ func runUISmoke() -> Int32 {
             let corner = view.previewRect(Frame(x: 1600, y: -200, width: 800, height: 450))
             return abs(display.width / display.height - 1600.0 / 900) < 0.001 && corner.minX == display.minX && corner.minY == display.minY && abs(corner.width - display.width / 2) < 0.001 && abs(corner.height - display.height / 2) < 0.001
         })
+        check("the Grid preset preview spreads 4, 6 and 7 windows evenly, longer rows on top (WO-GRID-BALANCED shots)", {
+            let view = ScreenPreview(frame: NSRect(x: 0, y: 0, width: 750, height: 500))
+            view.screen = screen
+            var rows: [[Int]] = []
+            for n in [4, 6, 7] {
+                let frames = presetFrames(.grid, count: n, in: screen.visibleFrame)
+                view.windows = frames.enumerated().map { PreviewWindow(frame: $1, title: "Terminal · \($0 + 1)", bundleID: "terminal") }
+                let tops = frames.map(\.y)
+                rows.append(Set(tops).sorted().map { y in tops.filter { $0 == y }.count })
+                for (mode, look) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+                    try writeBackedShot(view, look: look, to: URL(fileURLWithPath: state).appendingPathComponent("grid-\(n)-\(mode).png"))
+                }
+            }
+            return rows == [[2, 2], [3, 3], [3, 2, 2]]
+        })
         check("the editor reads windows off the main thread unless a test injects a reader", {
             let live = LayoutsWindow()
             let injected = LayoutsWindow()

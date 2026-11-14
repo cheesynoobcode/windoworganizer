@@ -1,3 +1,3 @@
 import Foundation
 
-exit(runChecks(frameChecks + coreChecks + desktopChecks + restoreChecks + triggerChecks + newWindowChecks + zoneChecks + editorChecks + ruleChecks + reviewChecks + workspaceChecks + migrationChecks + offscreenChecks + migrationTextChecks + migrationKeepChecks + gapChecks + sortChecks + autoChecks + launchChecks + groupChecks + groupEditChecks + groupApplyChecks + readChecks + partialChecks + cardKeyChecks + otherSetupChecks + wordsS5S6Checks))
+exit(runChecks(frameChecks + coreChecks + desktopChecks + restoreChecks + triggerChecks + newWindowChecks + zoneChecks + editorChecks + ruleChecks + reviewChecks + workspaceChecks + migrationChecks + offscreenChecks + migrationTextChecks + migrationKeepChecks + gapChecks + sortChecks + autoChecks + launchChecks + groupChecks + groupEditChecks + groupApplyChecks + readChecks + partialChecks + cardKeyChecks + otherSetupChecks + wordsS5S6Checks + gridChecks))
